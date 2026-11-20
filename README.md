@@ -88,8 +88,9 @@ It's meant as a simple mechanism to configure things such as SASL credentials an
 postfix_check: false
 ```
 
-This is a boolean which determines if `postfix check` is run before starting
-Postfix if the configuration has changed.  The default is `true`.
+This is a boolean which determines if `postfix check` is run before Postfix is
+restarted with a changed configuration, and after a failed start.  The default
+is `true`.
 
 ### postfix_backup
 

@@ -110,6 +110,13 @@
       when:
         - postfix_transactional_update_reboot_ok is none
 
+# where the unit rebuilds main.cf on its first start, do that before configuring
+- name: Run the first-start configuration of postfix.service where it has one
+  command: /usr/lib/postfix/systemd/config_postfix
+  args:
+    creates: /var/adm/postfix.configured
+    removes: /usr/lib/postfix/systemd/config_postfix
+
 - name: Check for IPv6 enabled
   vars:
     ipv6_err: >-
@@ -141,12 +148,6 @@
 - name: Set postfix_default_database_type
   set_fact:
     postfix_default_database_type: "{{ __postfix_register_dbtype.stdout | trim }}"
-
-- name: Enable Postfix
-  service:
-    name: postfix
-    state: started
-    enabled: true
 
 - name: Get current config
   command: postconf
@@ -205,6 +206,34 @@
   include_tasks: manage_config.yml
   vars:
     __postfix_conf: "{{ postfix_conf }}"
+
+# Start only now: queued mail must not go out with the package's default config
+- name: Start postfix and report why it did not start
+  block:
+    - name: Enable Postfix
+      service:
+        name: postfix
+        state: started
+        enabled: true
+  rescue:
+    - name: Check if postfix has created its data directory
+      stat:
+        path: /var/lib/postfix
+      register: __postfix_data_dir
+
+    # postfix check would create the directory itself, with the wrong SELinux label
+    - name: Check postfix after the failed start
+      command: postfix check
+      register: __postfix_failed_start_check
+      changed_when: false
+      failed_when: false
+      when:
+        - postfix_check | bool
+        - __postfix_data_dir.stat.exists
+
+    - name: Report why postfix did not start
+      fail:
+        msg: "{{ [ansible_failed_result.msg, __postfix_failed_start_check.stderr | d('')] | select | join('\n') }}"
 
 - name: Record role success fingerprint
   sr_fingerprint:
