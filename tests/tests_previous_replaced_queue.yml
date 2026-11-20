@@ -1,0 +1,88 @@
+# Assisted by Claude Code using model(s) Claude Opus 5.5
+---
+# 192.0.2.1 (TEST-NET-1) never answers, so mail for the relay stays queued.
+# Without the fix the mail goes to example.com, seen only where that lookup answers within the pause.
+- name: Ensure previous=replaced sends no queued mail before the configuration is applied
+  hosts: all
+  vars:
+    __test_conf:
+      relayhost: "[192.0.2.1]"
+  tasks:
+    - name: Run the tests
+      block:
+        - name: Configure a relay that does not answer
+          include_tasks: tasks/run_role_with_clear_facts.yml
+          vars:
+            __sr_public: true
+            postfix_conf: "{{ __test_conf }}"
+
+        - name: Apply the configuration before the message is queued
+          meta: flush_handlers
+
+        - name: Get the time before the message is queued
+          command: date +%s
+          register: __postfix_test_queue_start
+          changed_when: false
+
+        - name: Queue a message for the relay
+          shell:
+            executable: /bin/bash
+            cmd: |
+              set -euo pipefail
+              echo test | sendmail -f root postfix-test@example.com
+          changed_when: true
+
+        - name: Run the role with previous=replaced
+          include_tasks: tasks/run_role_with_clear_facts.yml
+          vars:
+            __sr_public: true
+            postfix_conf: "{{ __test_conf | combine({'previous': 'replaced'}) }}"
+
+        - name: Give postfix time to work on the queue
+          pause:
+            seconds: 15
+
+        - name: Get the delivery attempts for the message
+          shell:
+            executable: /bin/bash
+            cmd: |
+              set -euo pipefail
+              journalctl --since "@{{ __postfix_test_queue_start.stdout }}" -o cat |
+                { grep 'to=<postfix-test@example[.]com>' || test $? = 1; }
+          register: __postfix_test_attempts
+          changed_when: false
+
+        - name: Get the mail queue
+          command: postqueue -p
+          register: __postfix_test_queue
+          changed_when: false
+
+        - name: Check that the message waits for the relay
+          assert:
+            that:
+              - "'postfix-test@example.com' in __postfix_test_queue.stdout"
+              - __postfix_test_attempts.stdout_lines |
+                reject('search', '192[.]0[.]2[.]1') | list | length == 0
+            fail_msg: "{{ __postfix_test_attempts.stdout_lines }}"
+
+        - name: Get the postfix state
+          shell:
+            executable: /bin/bash
+            cmd: |
+              set -euo pipefail
+              systemctl is-active postfix
+              postconf -h relayhost
+          register: __postfix_test_state
+          changed_when: false
+
+        - name: Check that postfix runs with the configured relay
+          assert:
+            that:
+              - __postfix_test_state.stdout_lines == ['active', '[192.0.2.1]']
+
+      always:
+        - name: Empty the mail queue
+          command: postsuper -d ALL
+          changed_when: true
+          failed_when: false
+          tags: tests::cleanup
